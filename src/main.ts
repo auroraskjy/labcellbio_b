@@ -15,7 +15,7 @@ async function bootstrap() {
   // ✅ CORS 설정
   app.enableCors({
     // origin: true, // 또는 'http://localhost:3000'
-    origin: ['http://localhost:3000', 'https://labcellbio.vercel.app'],
+    origin: ['http://localhost:3000', 'https://llabcellbio.com'],
     credentials: true, // ✔️ 이거 중요!
   });
 
