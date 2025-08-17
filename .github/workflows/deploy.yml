@@ -1,0 +1,122 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run lint check
+      run: npm run lint || true
+    
+    - name: Build check
+      run: npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Copy files to EC2
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USERNAME }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: ${{ secrets.EC2_PORT }}
+        source: "."
+        target: "/home/ubuntu/app"
+        strip_components: 0
+
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USERNAME }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: ${{ secrets.EC2_PORT }}
+        script: |
+           # Update system
+           sudo apt-get update -y
+           
+           # Force install Node.js 20
+           curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+           sudo apt-get install -y nodejs
+           
+           # Verify Node.js version
+           echo "Node.js version: $(node --version)"
+           echo "npm version: $(npm --version)"
+           
+           # Install PM2 for process management
+           sudo npm install -g pm2
+           
+           # Create app directory if it doesn't exist
+           sudo mkdir -p /home/ubuntu/app
+           sudo chown ubuntu:ubuntu /home/ubuntu/app
+           
+           # Navigate to app directory
+           cd /home/ubuntu/app
+           
+           # Stop existing process if running
+           pm2 stop labcellbio-backend || true
+           pm2 delete labcellbio-backend || true
+           
+           # Clean npm cache
+           npm cache clean --force
+           
+           # Install all dependencies (including dev dependencies for build)
+           npm ci --legacy-peer-deps
+           
+           # Build the application
+           npm run build
+           
+           # Check if build was successful
+           if [ ! -f "dist/src/main.js" ]; then
+             echo "Build failed: dist/src/main.js not found"
+             ls -la dist/src/ || echo "dist/src directory not found"
+             exit 1
+           fi
+           
+           # Install only production dependencies
+           npm ci --omit=dev --legacy-peer-deps
+           
+           # Create .env.local file
+           cat > .env.local << EOF
+           DB_HOST=${{ secrets.DB_HOST }}
+           DB_PORT=${{ secrets.DB_PORT }}
+           DB_USERNAME=${{ secrets.DB_USERNAME }}
+           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+           DB_DATABASE=${{ secrets.DB_DATABASE }}
+           JWT_SECRET=${{ secrets.JWT_SECRET }}
+           JWT_EXPIRES_IN=${{ secrets.JWT_EXPIRES_IN }}
+           AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+           AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+           AWS_REGION=${{ secrets.AWS_REGION }}
+           AWS_S3_BUCKET=${{ secrets.AWS_S3_BUCKET }}
+           EOF
+           
+           # Start application with PM2
+           pm2 start dist/src/main.js --name labcellbio-backend --env production
+           
+           # Save PM2 configuration
+           pm2 save
+           
